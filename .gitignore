@@ -6,8 +6,10 @@ dist/
 wheels/
 *.egg-info
 data/
-
+*.DS_Store
 # Virtual environments
 .venv
 
 *.docx
+
+*claude.md
