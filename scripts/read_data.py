@@ -36,7 +36,12 @@ def read_nov_data(
 
         parquet_files = sorted(truck_cache.glob("*.parquet"))
         lf = pl.concat(
-            [pl.scan_parquet(f) for f in parquet_files],
+            [
+                pl.scan_parquet(f).with_columns(
+                    pl.lit(f.stem).alias("Date"),
+                )
+                for f in parquet_files
+            ],
             how="diagonal_relaxed",
         )
         truck_lfs[truck_id] = lf
