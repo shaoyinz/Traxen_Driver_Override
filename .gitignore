@@ -13,3 +13,7 @@ data/
 *.docx
 
 *claude.md
+
+*.xlsx
+
+*.csv
