@@ -15,6 +15,7 @@ Workflow
 from config import CFG
 from data_loader import prepare_truck_dataframe, read_nov_data
 from pipeline import run_pipeline
+from pathlib import Path
 
 
 def main() -> None:
@@ -22,19 +23,22 @@ def main() -> None:
     # Parameters – edit these directly
     # -----------------------------------------------------------------------
 
+    # Establish root path for relative paths. Allows running main.py from any CWD.
+    ROOT = Path(__file__).resolve().parents[1] # repo root since main.py is in scripts/
+
     # Directory containing the .7z archives
-    data_dir: str = "data/nov_data"
+    data_dir: str = ROOT / "data" / "nov_data"
 
     # Which trucks to process.
     # Set to None to load all trucks found in data_dir.
     truck_ids: list[str] | None = ["5FT0217"]
 
     # Where to write the summary events CSV
-    output_path: str = "temp/override_events.csv"
+    output_path: str = ROOT / "temp" / "override_events.csv"
 
     # Directory for per-event 20-second context CSVs.
     # Set to "" to skip writing them.
-    context_dir: str = "temp/event_windows"
+    context_dir: str = ROOT / "temp" / "event_windows"
 
     # -- Pipeline thresholds (override CFG defaults here if needed) ---------
     CFG["MIN_ACTIVE_SESSION_S"] = 5.0   # seconds a session must run before override

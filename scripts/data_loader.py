@@ -53,7 +53,7 @@ def read_nov_data(
     """
     data_dir  = Path(data_dir)
     cache_dir = data_dir / "_parquet_cache"
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     truck_lfs: dict[str, pl.LazyFrame] = {}
 
     for archive_path in sorted(data_dir.glob("*.7z")):
