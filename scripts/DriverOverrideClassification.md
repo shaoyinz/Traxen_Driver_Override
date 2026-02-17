@@ -17,10 +17,11 @@
 ## Override Classes
 
 - Throttle Override
-    - Signal: iQCMode transitions INTO state 6 (2/3/4→6). Followed by recovery sequence (6→2→3→4→3→0)
-    - Without signal: Exit from active state → 0/5/7 AND AccelPedal > threshold in pre-window AND no brake signal AND mode 6 was NOT seen
-- Brake Override: iQCMode exits an active state (any of 1,2,3,4) → 0/5/7 AND BrakeSwitch == 1 in the pre-window.
-
+    - Signal (THROTTLE_OVERRIDE): iQCMode transitions INTO state 6 (2/3/4→6). Followed by recovery sequence (6→2→3→4→3→0)
+    - Without signal(ACCEL_PEDAL): Exit from active state → 0/5/7 AND AccelPedal > threshold in pre-window AND no brake signal AND mode 6 was NOT seen
+- Brake Override(BRAKE_PEDAL): iQCMode exits an active state (any of 1,2,3,4) → 0/5/7 AND BrakeSwitch == 1 in the pre-window.
+- Turn off ACC (ACC_OFF_BUTTON): iQCMode exits an active state (any of 1,2,3,4) → 0/5/7 AND no observation of BrakeSwitch == 1 in the pre-window.
+- Unknown
 ---
 
 ## Code Structure
@@ -82,6 +83,7 @@ Contains all processing stages and the `run_pipeline()` orchestrator. Each stage
 **Stage 2 — `dedup_and_check_gaps(df)`**
 - Resolves duplicate timestamps using GPS quality: if only one row in a duplicate group has reasonable lat/lon, keep that row; if none do, keep the last; if multiple differ in content, print a warning.
 - Adds `_dt_s` (inter-row time delta in seconds) for gap detection downstream.
+- ❓ [As of 02/16] Addressed data continuity challenges caused by system resets, where timestamps represent time elapsed rather than absolute time. As mentioned before, I introduced a `time_period` column to partition these reset cycles; however, duplicate timestamps with valid GPS coordinates remain an issue. Notably, the majority of these duplicates coincide with iQCruise being in an 'off' state, suggesting this state can be used as a heuristic for further data cleaning and deduplication.
 
 **Stage 2b — `clean_zero_gps(df)`**
 - Replaces lat=0, lon=0 rows with NaN (GPS dropout placeholders). Other CAN signals on those rows remain valid.
@@ -141,3 +143,20 @@ Ties everything together with a simple top-level script:
 2. **Load data** — Calls `read_nov_data()` to get a dict of truck LazyFrames.
 3. **Process each truck** — Iterates over trucks, calls `prepare_truck_dataframe()` to materialize the data, then `run_pipeline()` to extract and classify override events.
 4. **Output routing** — Generates per-truck output filenames (e.g. `override_events_5FT0217.csv`) and per-truck context directories.
+
+---
+# Example: Truck `5FT0217`
+
+## Statistics
+
+- ~20% of the raw logs have iQCMode = 2, 3, 4, 5
+- Based on the pipeline above, we detected the following 1924 events:
+
+| override_type       | Count | %      |
+|---------------------|-------|--------|
+| THROTTLE_OVERRIDE   | 1,683 | 87.47% |
+| ACC_OFF_BUTTON      |    87 |  4.52% |
+| UNKNOWN             |    86 |  4.47% |
+| ACCEL_PEDAL         |    64 |  3.33% |
+| BRAKE_PEDAL         |     4 |  0.21% |
+
