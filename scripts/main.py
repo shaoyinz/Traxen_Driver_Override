@@ -20,7 +20,7 @@ from pathlib import Path
 
 def main() -> None:
     # -----------------------------------------------------------------------
-    # Parameters – edit these directly
+    # Parameters – Edit these directly
     # -----------------------------------------------------------------------
 
     # Establish root path for relative paths. Allows running main.py from any CWD.
@@ -33,7 +33,7 @@ def main() -> None:
     # Set to None to load all trucks found in data_dir.
     truck_ids: list[str] | None = ["5FT0217"]
 
-    # Where to write the summary events CSV
+    # Where to write the summary events CSV.
     output_path: str = ROOT / "temp" / "override_events.csv"
 
     # Directory for per-event 20-second context CSVs.
