@@ -28,7 +28,7 @@ from config import COLS
 
 
 # ---------------------------------------------------------------------------
-# Step 1 – archive extraction + lazy scan
+# Step 1 – Archive Extraction + Lazy Scan
 # ---------------------------------------------------------------------------
 
 def read_nov_data(
@@ -95,7 +95,7 @@ def read_nov_data(
 
 
 # ---------------------------------------------------------------------------
-# Step 2 – collect + convert to pandas for the pipeline
+# Step 2 – Collect + Convert for Pipeline
 # ---------------------------------------------------------------------------
 
 def prepare_truck_dataframe(
