@@ -58,7 +58,9 @@ def main() -> None:
         df = prepare_truck_dataframe(lf, truck_id=truck_id)
 
         # Optionally route outputs per truck
-        truck_output  = output_path.replace(".csv", f"_{truck_id}.csv")
+        truck_output = output_path.with_name(
+            f"{output_path.stem}_{truck_id}.csv"
+        )
         truck_ctx_dir = f"{context_dir}/{truck_id}" if context_dir else ""
 
         run_pipeline(
