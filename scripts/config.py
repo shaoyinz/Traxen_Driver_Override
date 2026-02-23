@@ -21,14 +21,9 @@ pipeline logic.
 
 CFG: dict = {
     # -- iQCMode state groups ------------------------------------------------
-    "IQCMODE_ACTIVE":            {2., 3., 4., 5.},
+    "IQCMODE_ACTIVE":            {2., 3., 4.},
     "IQCMODE_THROTTLE_OVERRIDE": 6.,
     "IQCMODE_INACTIVE":          {0., 1., 7.},
-
-    # -- Noise / debounce ----------------------------------------------------
-    # Bridge inactive blips shorter than this (seconds) sandwiched between
-    # active runs – handles 100 ms logger glitches.
-    "MIN_INACTIVE_BRIDGE_S": 2.0,
 
     # Gaps larger than this (seconds) are treated as hard session breaks.
     "MAX_INTRA_FILE_GAP_S": 30.0,
@@ -120,7 +115,7 @@ COLS: dict[str, str] = {
 # Columns written into per-event context window CSVs (stage 9)
 # ---------------------------------------------------------------------------
 CONTEXT_COLS: list[str] = [
-    "Timestamp", "iqcmode_clean",
+    "Timestamp", "iQC1.iQCMode",
     "EEC2_Engine.AccelPedalPos1",
     "CCVS1_Engine.BrakeSwitch",
     "CCVS1_Engine.WheelBasedVehicleSpeed",

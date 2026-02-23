@@ -31,7 +31,7 @@ def main() -> None:
 
     # Which trucks to process.
     # Set to None to load all trucks found in data_dir.
-    truck_ids: list[str] | None = ["5FT0217"]
+    truck_ids: list[str] | None = ["5FT0192"]
 
     # Where to write the summary events CSV.
     output_path: str = ROOT / "temp" / "override_events.csv"
@@ -41,8 +41,8 @@ def main() -> None:
     context_dir: str = ROOT / "temp" / "event_windows"
 
     # -- Pipeline thresholds (override CFG defaults here if needed) ---------
-    CFG["MIN_ACTIVE_SESSION_S"] = 5.0   # seconds a session must run before override
-    CFG["MIN_SPEED_KPH"]        = 15.0  # events below this speed are flagged noisy
+    CFG["MIN_ACTIVE_SESSION_S"] = 40.0   # seconds a session must run before override
+    CFG["MIN_SPEED_KPH"]        = 30.0  # events below this speed are flagged noisy
 
     # -----------------------------------------------------------------------
     # Run

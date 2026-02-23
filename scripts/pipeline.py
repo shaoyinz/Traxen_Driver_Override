@@ -7,14 +7,13 @@ Stages
 ------
   2.  dedup_and_check_gaps      – resolve duplicate timestamps, flag large gaps
   2b. clean_zero_gps            – null out GPS dropout placeholders
-  3.  debounce_iqcmode          – bridge short inactive blips (logger glitches)
-  4.  build_sessions            – segment contiguous iQC-active periods
-  5.  detect_overrides          – find every throttle-entry and active-state exit
-  6.  dedup_throttle_exits      – flag system exits that follow a throttle override
-  7.  filter_events             – mark noisy / low-quality events
-  8.  classify_overrides        – label each event with an override type
-  9.  save_context_windows      – write per-event 20-second CSVs
-  10. export_events             – write the summary events CSV
+  3.  build_sessions            – segment contiguous iQC-active periods
+  4.  detect_overrides          – find every throttle-entry and active-state exit
+  5.  dedup_throttle_exits      – flag system exits that follow a throttle override
+  6.  filter_events             – mark noisy / low-quality events
+  7.  classify_overrides        – label each event with an override type
+  8.  save_context_windows      – write per-event 20-second CSVs
+  9.  export_events             – write the summary events CSV
 
 Orchestrator
 ------------
@@ -156,68 +155,13 @@ def clean_zero_gps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 – Debounce iQCMode
-# ---------------------------------------------------------------------------
-
-def debounce_iqcmode(df: pd.DataFrame) -> pd.DataFrame:
-    """Eliminate logger glitches without masking real override events.
-
-    Rule: if a run of INACTIVE rows (0/1/7) lasts less than
-    ``MIN_INACTIVE_BRIDGE_S`` seconds AND is sandwiched between two
-    ACTIVE-state runs, bridge it with the preceding active value.
-
-    Mode 6 (Throttle Override) is always preserved – it is a real event.
-    Result is written to a new ``iqcmode_clean`` column; the raw
-    ``iQC1.iQCMode`` column is left untouched.
-    """
-    print("[3] Debouncing iQCMode ...")
-    raw     = df[COLS["iqc_mode"]].copy()
-    cleaned = raw.values.astype(float).copy()
-
-    ACTIVE   = CFG["IQCMODE_ACTIVE"]
-    INACTIVE = CFG["IQCMODE_INACTIVE"]
-    vals, starts, lengths = _rle(cleaned)
-
-    for i, (val, start, length) in enumerate(zip(vals, starts, lengths)):
-        dur_s = length * 0.1  # 100 ms per row
-        if (
-            val in INACTIVE
-            and dur_s < CFG["MIN_INACTIVE_BRIDGE_S"]
-            and 0 < i < len(vals) - 1
-            and vals[i - 1] in ACTIVE
-            and vals[i + 1] in ACTIVE
-        ):
-            cleaned[start: start + length] = vals[i - 1]
-
-    df["iqcmode_clean"] = cleaned
-    n_changed = (df["iqcmode_clean"] != raw.fillna(-1)).sum()
-    print(f"    Rows relabelled by debounce: {n_changed:,}")
-    return df
-
-
-def _rle(arr):
-    """Run-length encoding → (values, start_indices, lengths)."""
-    n = len(arr)
-    if n == 0:
-        return [], [], []
-    starts = [0]
-    for i in range(1, n):
-        if arr[i] != arr[i - 1]:
-            starts.append(i)
-    starts.append(n)
-    vals    = [arr[starts[j]]              for j in range(len(starts) - 1)]
-    lengths = [starts[j + 1] - starts[j]  for j in range(len(starts) - 1)]
-    return vals, starts[:-1], lengths
-
-
-# ---------------------------------------------------------------------------
-# Stage 4 – Build active sessions
+# Stage 3 – Build active sessions
 # ---------------------------------------------------------------------------
 
 def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
     """Segment contiguous iQC-active periods into labelled sessions.
 
-    A session is a contiguous block of ``iqcmode_clean`` in the set
+    A session is a contiguous block of ``iQC1.iQCMode`` in the set
     {2, 3, 4, 5, 6} with no inter-row gap exceeding
     ``MAX_INTRA_FILE_GAP_S``.  Mode 6 is included because the driver was
     under iQC control just before pressing the accelerator.
@@ -225,10 +169,10 @@ def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
     Adds columns: ``session_id``, ``session_start``, ``session_end``,
     ``session_dur_s``.
     """
-    print("[4] Building active sessions ...")
+    print("[3] Building active sessions ...")
 
     SESSION_STATES = CFG["IQCMODE_ACTIVE"] | {CFG["IQCMODE_THROTTLE_OVERRIDE"]}
-    mode = df["iqcmode_clean"].values
+    mode = df[COLS["iqc_mode"]].values
     dt   = df["_dt_s"].values
 
     session_id = np.full(len(df), np.nan)
@@ -281,30 +225,29 @@ def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 5 – Detect override events
+# Stage 4 – Detect override events
 # ---------------------------------------------------------------------------
 
 def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
     """Detect every override event using two complementary rules.
 
     Rule A – Throttle Override:
-        Any row where ``iqcmode_clean == 6`` and the previous row was not
-        also 6.  Mode 6 means the system itself recorded the accelerator
-        press and fires regardless of the preceding state.
+        Any row where ``iQC1.iQCMode`` transitions from ACTIVE {2,3,4,5}
+        into 6 (Throttle Override).
 
     Rule B – Active-state exit:
-        Row where ``iqcmode_clean`` is INACTIVE {0,1,7} and the previous row
+        Row where ``iQC1.iQCMode`` is INACTIVE {0,1,7} and the previous row
         was ACTIVE {2,3,4,5}.  Catches brake-pedal, button-press, and unknown
         exits.  The recovery tail after a Throttle Override also triggers this
         rule; duplicates are removed in stage 6.
     """
-    print("[5] Detecting override events ...")
+    print("[4] Detecting override events ...")
 
     ACTIVE   = CFG["IQCMODE_ACTIVE"]
     INACTIVE = CFG["IQCMODE_INACTIVE"]
     T_OVR    = CFG["IQCMODE_THROTTLE_OVERRIDE"]
 
-    mode      = df["iqcmode_clean"]
+    mode      = df[COLS["iqc_mode"]]
     mode_prev = mode.shift(1)
 
     mask_throttle = (mode_prev.isin(ACTIVE)) & (mode == T_OVR)
@@ -341,7 +284,7 @@ def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
     """Seconds the current session had been running at *prev_idx*."""
     ACTIVE = CFG["IQCMODE_ACTIVE"] | {CFG["IQCMODE_THROTTLE_OVERRIDE"]}
     j = prev_idx
-    while j > 0 and df.at[j, "iqcmode_clean"] in ACTIVE:
+    while j > 0 and df.at[j, COLS["iqc_mode"]] in ACTIVE:
         j -= 1
     return max(
         (df.at[prev_idx, COLS["ts"]] - df.at[j + 1, COLS["ts"]]).total_seconds(),
@@ -350,7 +293,7 @@ def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Stage 6 – De-duplicate post-throttle-override exits
+# Stage 5 – De-duplicate post-throttle-override exits
 # ---------------------------------------------------------------------------
 
 def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
@@ -363,7 +306,7 @@ def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
     Any ACTIVE_EXIT within ``THROTTLE_OVERRIDE_DEDUP_WINDOW_S`` seconds
     after a THROTTLE_ENTRY is marked ``is_throttle_exit_dup = True``.
     """
-    print("[6] De-duplicating post-throttle-override exits ...")
+    print("[5] De-duplicating post-throttle-override exits ...")
     events_df = events_df.copy()
     events_df["is_throttle_exit_dup"] = False
 
@@ -387,7 +330,7 @@ def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 7 – Filter noisy events
+# Stage 6 – Filter noisy events
 # ---------------------------------------------------------------------------
 
 def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
@@ -398,7 +341,7 @@ def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
       2. Session too short before override (< MIN_ACTIVE_SESSION_S).
       3. Very low speed (< MIN_SPEED_KPH) – possible stop or parking.
     """
-    print("[7] Filtering noise ...")
+    print("[6] Filtering noise ...")
     events_df = events_df.copy()
     events_df["is_noisy"] = events_df["is_throttle_exit_dup"]
 
@@ -416,7 +359,7 @@ def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 8 – Classify override type
+# Stage 7 – Classify override type
 # ---------------------------------------------------------------------------
 
 def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFrame:
@@ -429,7 +372,7 @@ def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFram
       4. ACC_OFF_BUTTON     – CC switch change in pre-window, no pedal activity
       5. UNKNOWN            – none of the above
     """
-    print("[8] Classifying override types ...")
+    print("[7] Classifying override types ...")
 
     pre_rows  = int(CFG["PRE_OVERRIDE_S"]  / 0.1)
     post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
@@ -529,7 +472,7 @@ def _at(df: pd.DataFrame, idx: int, col: str):
 
 
 # ---------------------------------------------------------------------------
-# Stage 9 – Save per-event context window CSVs
+# Stage 8 – Save per-event context window CSVs
 # ---------------------------------------------------------------------------
 
 def save_context_windows(
@@ -544,7 +487,7 @@ def save_context_windows(
     available = [c for c in CONTEXT_COLS if c in df.columns]
 
     clean = events_df[~events_df["is_noisy"]]
-    print(f"[9] Saving {len(clean)} context windows -> {output_dir}/")
+    print(f"[8] Saving {len(clean)} context windows -> {output_dir}/")
 
     for i, (_, ev) in enumerate(clean.iterrows()):
         idx    = int(ev["override_idx"])
@@ -561,7 +504,7 @@ def save_context_windows(
 
 
 # ---------------------------------------------------------------------------
-# Stage 10 – Export events table
+# Stage 9 – Export events table
 # ---------------------------------------------------------------------------
 
 def export_events(events_df: pd.DataFrame, output_path: str) -> None:
@@ -569,7 +512,7 @@ def export_events(events_df: pd.DataFrame, output_path: str) -> None:
     cols = [c for c in EXPORT_COLS if c in events_df.columns]
     out  = events_df[cols].sort_values("override_ts").reset_index(drop=True)
     out.to_csv(output_path, index=False)
-    print(f"[10] Events table saved -> {output_path}  ({len(out)} rows)")
+    print(f"[9] Events table saved -> {output_path}  ({len(out)} rows)")
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +541,6 @@ def run_pipeline(
 
     df = dedup_and_check_gaps(df)
     df = clean_zero_gps(df)
-    df = debounce_iqcmode(df)
     df = build_sessions(df)
 
     events_df = detect_overrides(df)
