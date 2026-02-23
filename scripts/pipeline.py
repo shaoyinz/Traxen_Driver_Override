@@ -307,7 +307,7 @@ def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
     mode      = df["iqcmode_clean"]
     mode_prev = mode.shift(1)
 
-    mask_throttle = (mode_prev != T_OVR) & (mode == T_OVR)
+    mask_throttle = (mode_prev.isin(ACTIVE)) & (mode == T_OVR)
     mask_exit     = (mode_prev.isin(ACTIVE)) & (mode.isin(INACTIVE))
 
     events = []
