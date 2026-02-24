@@ -13,5 +13,6 @@ dependencies = [
     "polars>=1.38.1",
     "py7zr>=1.1.2",
     "pyarrow>=23.0.0",
+    "seaborn>=0.13.2",
     "tqdm>=4.67.3",
 ]
