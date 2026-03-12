@@ -24,7 +24,7 @@ import pandas as pd
 import polars as pl
 import py7zr
 
-from scripts.config import COLS
+from config import COLS
 
 
 # ---------------------------------------------------------------------------
