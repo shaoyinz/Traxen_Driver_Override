@@ -28,7 +28,7 @@ from scripts.config import COLS
 
 
 # ---------------------------------------------------------------------------
-# Step 1 – archive extraction + lazy scan
+# Step 1 – Archive Extraction + Lazy Scan
 # ---------------------------------------------------------------------------
 
 def read_nov_data(
@@ -95,7 +95,7 @@ def read_nov_data(
 
 
 # ---------------------------------------------------------------------------
-# Step 2 – collect + convert to pandas for the pipeline
+# Step 2 – Collect + Convert to Pandas + Assign Time Periods
 # ---------------------------------------------------------------------------
 
 def prepare_truck_dataframe(
@@ -131,30 +131,60 @@ def prepare_truck_dataframe(
             f"Available columns: {list(df.columns[:10])} ..."
         )
 
-    # -- Assign time periods (Timestamp resets on system restart) -----------
-    # A new period starts whenever the raw Timestamp decreases (reset) or
-    # the Date column changes (new parquet file / day).
-    raw_ts = df[ts_col].values
-    period_break = np.zeros(len(df), dtype=bool)
-    period_break[0] = True
-    period_break[1:] = raw_ts[1:] < raw_ts[:-1]
+    # -- Assign time periods ----------------------------------------------
+    # A new time period starts when:
+    # - the raw timestamp decreases (indicating a system reset or rollover), or
+    # - the date changes (indicating a new parquet file / day).
+    # - the raw timestamp increases but the date remains the same (indicating a new period within the same day).
 
     if "Date" in df.columns:
-        date_change = df["Date"].values[1:] != df["Date"].values[:-1]
-        period_break[1:] |= date_change
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", format="%Y-%m-%d").dt.normalize()
+        df = df.sort_values(["Date", ts_col], kind='mergesort').reset_index(drop=True)
+    else:
+        base = pd.Timestamp("2000-01-01")
+        df["Date"] = base + pd.to_timedelta(df[ts_col], unit="s")
+        df = df.sort_values(["Date", ts_col], kind='mergesort').reset_index(drop=True)
+
+    raw_ts = pd.to_numeric(df[ts_col], errors="coerce")
+    dts = raw_ts.diff()
+
+    # Compute normal cadence of timestamps (100ms expected) from positive diffs, excluding huge gaps.
+    # Use the 99th percentile to be robust to outliers while still capturing the typical cadence.
+    POS_MAX = 10.0  # seconds, exclude giant gaps from cadence calculation
+    dts_pos = dts[(dts > 0) & (dts < POS_MAX)].dropna()
+
+    # Guardrails in case of unexpected data issues (e.g. all timestamps are the same or negative)
+    K_MULT = 20.0     # multiplier for typical cadence to define a gap threshold; 20x 100ms = 2s, which is a reasonable gap threshold for this data
+    FLOOR_S = 2.0     # minimum gap threshold of 1 second to avoid an excessively low threshold if the cadence is very fast or all timestamps are identical
+
+    if len(dts_pos) >= 100: # enough data points to compute a reliable cadence
+        quart = float(dts_pos.quantile(0.99))
+        gap_thres = max(quart * K_MULT, FLOOR_S)
+    else:
+        gap_thres = FLOOR_S
+
+    # Build period break mask
+    period_break = pd.Series(False, index=df.index)
+    period_break.iloc[0] = True
+
+    # Hard boundary: timestamp decreases
+    period_break |= dts.lt(0).fillna(False)
+
+    # Adaptive boundary: timestamp increases but gap is larger than expected cadence (indicating a new session or period)
+    period_break |= dts.gt(gap_thres).fillna(False)
+
+    # Hard boundary: date changes (indicating a new parquet file / day)
+    if "Date" in df.columns:
+        period_break |= df["Date"].ne(df["Date"].shift()).fillna(False)
 
     df["time_period"] = np.cumsum(period_break)
 
-    # -- Elapsed time (seconds from start of each period) ------------------
-    period_starts = df.groupby("time_period")[ts_col].transform("first")
-    df["elapsed_s"] = df[ts_col] - period_starts
-
-    # -- Convert Timestamp to datetime so pipeline dt operations work ------
+    # -- Convert Timestamp back to datetime so pipeline dt operations work ------
     # Use Date column as the calendar base when available; otherwise use a
     # synthetic epoch so that datetime arithmetic (diff, subtraction) is
     # still valid within each period.
     if "Date" in df.columns:
-        base = pd.to_datetime(df["Date"], format="%Y-%m-%d")
+        base = df["Date"].iloc[0].normalize()
     else:
         base = pd.Timestamp("2000-01-01")
     df[ts_col] = base + pd.to_timedelta(df[ts_col], unit="s")
