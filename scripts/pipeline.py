@@ -35,7 +35,7 @@ from config import CFG, COLS, CONTEXT_COLS, EXPORT_COLS
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ---------------------------------------------------------------------------
-# GPS validity helpers
+# GPS Validity Helpers
 # ---------------------------------------------------------------------------
 
 _LAT_BOUNDS      = (-90.0,  90.0)
@@ -57,11 +57,13 @@ def _is_reasonable_latlon(lat, lon) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 – Dedup & gap detection
+# Stage 2 – Dedup & Gap Detection
 # ---------------------------------------------------------------------------
 
 def dedup_and_check_gaps(df: pd.DataFrame) -> pd.DataFrame:
-    """Resolve duplicate timestamps using lat/lon quality, then flag large gaps.
+    """
+    Resolve duplicate timestamps using lat/lon quality, then flag large gaps.
+    Vectorized version to avoid slow per-row iteration and OOM (no per-row apply, minimal intermediate objects).
 
     Resolution rules per duplicate group:
       1. No row has reasonable lat/lon  → keep the last row.
@@ -135,11 +137,12 @@ def dedup_and_check_gaps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2b – Clean zero GPS
+# Stage 2b – Clean Zero GPS
 # ---------------------------------------------------------------------------
 
 def clean_zero_gps(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace lat=0 & lon=0 with NaN (GPS dropout placeholder).
+    """
+    Replace lat=0 & lon=0 with NaN (GPS dropout placeholder).
 
     Other CAN signals on the same rows (speed, torque, pedals, iQCMode) are
     independently sourced and remain valid – only the GPS columns are nulled.
@@ -155,11 +158,12 @@ def clean_zero_gps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 – Build active sessions
+# Stage 3 – Build Active Sessions
 # ---------------------------------------------------------------------------
 
 def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
-    """Segment contiguous iQC-active periods into labelled sessions.
+    """
+    Segment contiguous iQC-active periods into labelled sessions.
 
     A session is a contiguous block of ``iQC1.iQCMode`` in the set
     {2, 3, 4, 5, 6} with no inter-row gap exceeding
@@ -229,7 +233,8 @@ def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect every override event using two complementary rules.
+    """
+    Detect every override event using two complementary rules.
 
     Rule A – Throttle Override:
         Any row where ``iQC1.iQCMode`` transitions from ACTIVE {2,3,4,5}
@@ -281,7 +286,9 @@ def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
-    """Seconds the current session had been running at *prev_idx*."""
+    """
+    Seconds the current session had been running at *prev_idx*.
+    """
     ACTIVE = CFG["IQCMODE_ACTIVE"] | {CFG["IQCMODE_THROTTLE_OVERRIDE"]}
     j = prev_idx
     while j > 0 and df.at[j, COLS["iqc_mode"]] in ACTIVE:
@@ -297,7 +304,8 @@ def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
 # ---------------------------------------------------------------------------
 
 def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
-    """Flag ACTIVE_EXIT events that are part of the system's own recovery.
+    """
+    Flag ACTIVE_EXIT events that are part of the system's own recovery.
 
     After a Throttle Override (mode → 6) the system goes through a recovery
     sequence (6 → 2 → 3 → 4 → 3 → 0) before re-engaging.  The final
@@ -334,7 +342,8 @@ def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
-    """Mark low-quality events as noisy (flagged, not deleted).
+    """
+    Mark low-quality events as noisy (flagged, not deleted).
 
     Criteria:
       1. Post-throttle-override system exits (stage 6).
@@ -363,7 +372,8 @@ def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFrame:
-    """Label each event with an override type and enrich with context features.
+    """
+    Label each event with an override type and enrich with context features.
 
     Classification hierarchy (priority order):
       1. THROTTLE_OVERRIDE  – raw_detection_type == 'THROTTLE_ENTRY'
@@ -480,7 +490,9 @@ def save_context_windows(
     events_df: pd.DataFrame,
     output_dir: str,
 ) -> None:
-    """Write one CSV per clean override event covering ±10 seconds."""
+    """
+    Write one CSV per clean override event covering ±10 seconds.
+    """
     os.makedirs(output_dir, exist_ok=True)
     pre_rows  = int(CFG["PRE_OVERRIDE_S"]  / 0.1)
     post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
@@ -508,7 +520,9 @@ def save_context_windows(
 # ---------------------------------------------------------------------------
 
 def export_events(events_df: pd.DataFrame, output_path: str) -> None:
-    """Write the full events table (all events, noisy ones included) to CSV."""
+    """
+    Write the full events table (all events, noisy ones included) to CSV.
+    """
     cols = [c for c in EXPORT_COLS if c in events_df.columns]
     out  = events_df[cols].sort_values("override_ts").reset_index(drop=True)
     out.to_csv(output_path, index=False)
@@ -524,7 +538,8 @@ def run_pipeline(
     output_path: str,
     context_dir: str = "",
 ) -> pd.DataFrame:
-    """Run all pipeline stages on an already-loaded DataFrame.
+    """
+    Run all pipeline stages on an already-loaded DataFrame.
 
     Args:
         df:           Pandas DataFrame from ``data_loader.prepare_truck_dataframe``.
