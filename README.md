@@ -84,20 +84,31 @@ Then select the **driver-override** kernel in your notebook.
 
 ```
 Driver_Override/
-├── pyproject.toml          # Project metadata and dependencies
-├── uv.lock                 # Locked dependency versions
-├── .python-version         # Pinned Python version (3.13)
+├── pyproject.toml                              # Project metadata and dependencies
+├── uv.lock                                     # Locked dependency versions
+├── .python-version                             # Pinned Python version (3.13)
 ├── .gitignore
 ├── README.md
-├── data/                   # Raw input data (compressed parquet files)
+├── data/                                       # Raw input data (compressed archives)
 │   ├── 5FT0491_2026-01-27.parquet.gzip.7z
-│   └── 5FT0491_2026-01-28.parquet.gzip.7z
-├── jupyter_notebooks/      # Analysis notebooks
-│   └── basic_stats.ipynb
-├── output/                 # Generated results (plots, tables, etc.)
-└── temp/                   # Temporary / intermediate files
-└── scripts/                   # Python Scripts (tba)
-└── main.py                  # Main entry point (tba)
+│   ├── 5FT0491_2026-01-28.parquet.gzip.7z
+│   ├── Summer_data/                            # Summer driving data (.7z per vehicle)
+│   └── nov_data/                               # November driving data (.7z per vehicle)
+├── jupyter_notebooks/                          # Analysis notebooks
+│   ├── EDA.ipynb
+│   ├── basic_stats.ipynb
+│   ├── clustering.ipynb
+│   ├── override.ipynb
+│   └── some_eda.ipynb
+├── scripts/                                    # Pipeline & processing scripts
+│   ├── main.py                                 # Main entry point
+│   ├── config.py                               # Configuration & signal definitions
+│   ├── data_loader.py                          # Data loading utilities
+│   ├── pipeline.py                             # Override event detection pipeline
+│   └── DriverOverrideClassification.md         # Classification reference docs
+├── output/                                     # Generated results (plots, tables, etc.)
+├── temp/                                       # Temporary / intermediate files
+└── tests/                                      # Unit tests
 ```
 
 
