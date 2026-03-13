@@ -12,16 +12,15 @@
 - 6 = Throttle Override — DRIVER pushed the accelerator (explicit accel override)
 - 7 = Fault             — system fault
 
-`iQC1.iQCMode==2,3,4,5` indicate iQCruise is active, `iQC1.iQCMode==6` indicates a throttle override. For other cases, they are manual driving.
+`iQC1.iQCMode==2,3,4` indicate iQCruise is active, `iQC1.iQCMode==6` indicates a throttle override. For other cases, they are manual driving.
 
 ## Override Classes
 
 - Throttle Override
-    - Signal (THROTTLE_OVERRIDE): iQCMode transitions INTO state 6 (2/3/4→6). Followed by recovery sequence (6→2→3→4→3→0)
-    - Without signal(ACCEL_PEDAL): Exit from active state → 0/5/7 AND AccelPedal > threshold in pre-window AND no brake signal AND mode 6 was NOT seen
-- Brake Override(BRAKE_PEDAL): iQCMode exits an active state (any of 1,2,3,4) → 0/5/7 AND BrakeSwitch == 1 in the pre-window.
-- Turn off ACC (ACC_OFF_BUTTON): iQCMode exits an active state (any of 1,2,3,4) → 0/5/7 AND no observation of BrakeSwitch == 1 in the pre-window.
-- Unknown
+    - `THROTTLE_OVERRIDE`: iQCMode transitions INTO state 6 (2/3/4→6). Followed by recovery sequence (6→2→3→4→3→0).
+- Throttle + Brake Pedal
+    - `THROTTLE_BRAKE_PEDAL`: iQCMode exits active control and BrakeSwitch == 1 in the pre-window.
+- Any other previous categories (`ACCEL_PEDAL`, `ACC_OFF_BUTTON`, `UNKNOWN`) are no longer exported.
 ---
 
 ## Code Structure
@@ -41,7 +40,7 @@ Centralizes every tunable parameter and column name so that pipeline logic never
 | `IQCMODE_INACTIVE` | {0, 1, 7} | iQCMode values considered "manual driving" |
 | `MAX_INTRA_FILE_GAP_S` | 30.0 s | Gaps larger than this break a session |
 | `MIN_ACTIVE_SESSION_S` | 40.0 s | Session must have been active at least this long before an override is considered valid |
-| `ACCEL_PEDAL_THRESHOLD_PCT` | 5.0 % | Accelerator pedal position above which an accel-pedal override is detected |
+| `ACCEL_PEDAL_THRESHOLD_PCT` | 5.0 % | Accelerator pedal threshold retained as a tunable signal feature |
 | `BRAKE_SWITCH_ON` | 1.0 | Value of BrakeSwitch that means "brake pressed" |
 | `MIN_SPEED_KPH` | 30.0 kph | Events below this speed are flagged as noisy (possible stop/parking) |
 | `THROTTLE_OVERRIDE_DEDUP_WINDOW_S` | 30.0 s | Active-exit events within this window after a throttle entry are flagged as system recovery, not new overrides |
@@ -51,7 +50,7 @@ Centralizes every tunable parameter and column name so that pipeline logic never
 
 Maps short keys (e.g. `"iqc_mode"`, `"accel_pedal"`, `"brake_sw_eng"`) to the actual CAN signal names in the parquet files (e.g. `"iQC1.iQCMode"`, `"EEC2_Engine.AccelPedalPos1"`, `"CCVS1_Engine.BrakeSwitch"`). Covers iQC system state, pedal/brake signals, cruise control buttons, speed, road geometry, radar CIPV, engine/torque, GPS, GVW, and misc signals.
 
-**`CONTEXT_COLS`** — list of columns written into per-event 20-second context window CSVs (stage 8).
+**`CONTEXT_COLS`** — list of columns used for context-window exports (stage 8), including both per-event CSV and unified parquet options.
 
 **`EXPORT_COLS`** — list of columns written into the final summary events CSV (stage 9).
 
@@ -109,23 +108,35 @@ Contains all processing stages and the `run_pipeline()` orchestrator. Each stage
 
 **Stage 7 — `classify_overrides(df, events_df)`**
 - Looks at the 10-second pre-window and classifies each event by priority:
-  1. **THROTTLE_OVERRIDE** — raw detection type is `THROTTLE_ENTRY` (mode 6 was seen). This is the only one we cared for now.
-  2. **BRAKE_PEDAL** — BrakeSwitch == 1 in the pre-window.
-  3. **ACCEL_PEDAL** — AccelPedal > 5% threshold in pre-window, no brake signal (throttle override without mode 6).
-  4. **ACC_OFF_BUTTON** — Cruise control switch changed in pre-window, no pedal activity.
-  5. **UNKNOWN** — none of the above criteria met.
+  1. **THROTTLE_OVERRIDE** — raw detection type is `THROTTLE_ENTRY` (mode 6 seen).
+  2. **THROTTLE_BRAKE_PEDAL** — BrakeSwitch == 1 in the pre-window.
+  3. **Non-target** (`None`) — all other events.
 - Enriches each event with context features: average speed pre/post, CIPV distance, road grade, road curvature, altitude, retarder usage, GVW, EH localization status, and GPS coordinates.
 
-**Stage 8 — `save_context_windows(df, events_df, output_dir)`**
-- For each clean (non-noisy) event, extracts a ±10-second window from the full DataFrame.
+**Stage 8 — Context Window Export (Two Options)**
+
+**Option 1 — `save_context_windows(df, events_df, output_dir)`**
+- For each clean (non-noisy) event, extracts a +/-10-second window from the full DataFrame.
 - Writes one CSV per event containing the columns defined in `CONTEXT_COLS`, with an `is_override_point` flag marking the exact override row.
+
+**Option 2 — `save_context_windows_parquet(df, events_df, output_dir, truck_id)`**
+- For each clean event, extracts the same +/-10-second context window.
+- Concatenates all event windows into one parquet file: `context_windows.parquet`.
+- Adds metadata columns per row so each row can be traced back to the source event:
+  - `truck_id`
+  - `event_id` (0-based ID assigned per clean event in that run)
+  - `override_type`
+  - `override_ts`
+  - `is_override_point`
 
 **Stage 9 — `export_events(events_df, output_path)`**
 - Writes the full events table (all events including noisy ones) to a summary CSV with the columns defined in `EXPORT_COLS`.
 
-**Stage 11 (within `run_pipeline`)** — Saves the processed full DataFrame as a parquet file so that `override_idx` values can be used for later lookups.
-
-**`run_pipeline(df, output_path, context_dir)`** — Orchestrates stages 2–9 in order, prints a summary of total/clean/noisy event counts and override type distribution.
+**`run_pipeline(df, output_path, context_dir, ...)`** — Orchestrates stages 2–9 in order, prints a summary of total/clean/noisy event counts and override type distribution.  
+It now supports independent output toggles:
+- `write_context`: writes stage-8 context windows (parquet option via `save_context_windows_parquet`)
+- `write_events`: writes stage-9 events CSV
+- `truck_id`: propagated into stage-8 parquet output metadata
 
 ---
 
@@ -135,8 +146,9 @@ Ties everything together with a simple top-level script:
 
 1. **Configure parameters** — Sets `data_dir`, `truck_ids` (allow-list), `output_path`, `context_dir`, and optionally overrides `CFG` thresholds.
 2. **Load data** — Calls `read_nov_data()` to get a dict of truck LazyFrames.
-3. **Process each truck** — Iterates over trucks, calls `prepare_truck_dataframe()` to materialize the data, then `run_pipeline()` to extract and classify override events.
-4. **Output routing** — Generates per-truck output filenames (e.g. `override_events_5FT0217.csv`) and per-truck context directories.
+3. **Process each truck** — Iterates over trucks, calls `prepare_truck_dataframe()`, then `run_pipeline(..., write_outputs=False)` to compute events in memory.
+4. **Filter to target classes** — `filter_target_events()` keeps only `THROTTLE_OVERRIDE` and `THROTTLE_BRAKE_PEDAL`.
+5. **Output routing** — Exports only filtered events to CSV, and writes context windows as a unified parquet dataset (Option 2).
 
 ---
 # Example: Truck `5FT0192`
@@ -146,4 +158,4 @@ Ties everything together with a simple top-level script:
 - `MIN_SPEED_KPH`: 30
 ## Statistics
 - Total active time: 84.5 h;
-- Throttle override events: 798, where 612 of them have `cipv_detected` is True.
+- Throttle override events: 798, where 612 of them have `cipv_detected` is True; is that safe to say that the driver do a throttle override to go pass the vechicle ahead?
