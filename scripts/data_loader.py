@@ -94,6 +94,46 @@ def read_nov_data(
     return truck_lfs
 
 
+def read_data_dirs(
+    data_dirs: list[str | Path],
+    truck_ids: list[str] | None = None,
+) -> dict[str, pl.LazyFrame]:
+    """Load and merge trucks from multiple archive directories.
+
+    Each directory is scanned with ``read_nov_data``. If a truck appears in
+    more than one directory (e.g., ``nov_data`` + ``Summer_data``), all
+    LazyFrames are concatenated with ``diagonal_relaxed``.
+    """
+    merged_lfs: dict[str, pl.LazyFrame] = {}
+    usable_dirs: list[Path] = []
+
+    for d in data_dirs:
+        data_dir = Path(d)
+        if not data_dir.exists() or not data_dir.is_dir():
+            print(f"[loader] WARNING: data source missing, skipping -> {data_dir}")
+            continue
+
+        usable_dirs.append(data_dir)
+        source_lfs = read_nov_data(data_dir=str(data_dir), truck_ids=truck_ids)
+        for truck_id, lf in source_lfs.items():
+            if truck_id in merged_lfs:
+                merged_lfs[truck_id] = pl.concat(
+                    [merged_lfs[truck_id], lf],
+                    how="diagonal_relaxed",
+                )
+            else:
+                merged_lfs[truck_id] = lf
+
+    if not usable_dirs:
+        joined = ", ".join(str(Path(d)) for d in data_dirs)
+        raise FileNotFoundError(
+            f"[loader] None of the configured data directories exist: {joined}"
+        )
+
+    print(f"\n[loader] Total trucks loaded across all sources: {len(merged_lfs)}")
+    return merged_lfs
+
+
 # ---------------------------------------------------------------------------
 # Step 2 – Collect + Convert to Pandas + Assign Time Periods
 # ---------------------------------------------------------------------------
