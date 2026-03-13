@@ -224,10 +224,10 @@ def prepare_truck_dataframe(
     # synthetic epoch so that datetime arithmetic (diff, subtraction) is
     # still valid within each period.
     if "Date" in df.columns:
-        base = df["Date"].iloc[0].normalize()
+        df[ts_col] = df["Date"] + pd.to_timedelta(raw_ts, unit="s")
     else:
         base = pd.Timestamp("2000-01-01")
-    df[ts_col] = base + pd.to_timedelta(df[ts_col], unit="s")
+        df[ts_col] = base + pd.to_timedelta(raw_ts, unit="s")
 
     n_periods = df["time_period"].nunique()
     print(
