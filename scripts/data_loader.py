@@ -185,49 +185,44 @@ def prepare_truck_dataframe(
         df["Date"] = base + pd.to_timedelta(df[ts_col], unit="s")
         df = df.sort_values(["Date", ts_col], kind='mergesort').reset_index(drop=True)
 
-    raw_ts = pd.to_numeric(df[ts_col], errors="coerce")
-    dts = raw_ts.diff()
+    df["ts_raw"] = pd.to_numeric(df[ts_col], errors="coerce")
 
     # Compute normal cadence of timestamps (100ms expected) from positive diffs, excluding huge gaps.
     # Use the 99th percentile to be robust to outliers while still capturing the typical cadence.
-    POS_MAX = 10.0  # seconds, exclude giant gaps from cadence calculation
-    dts_pos = dts[(dts > 0) & (dts < POS_MAX)].dropna()
-
-    # Guardrails in case of unexpected data issues (e.g. all timestamps are the same or negative)
-    K_MULT = 20.0     # multiplier for typical cadence to define a gap threshold; 20x 100ms = 2s, which is a reasonable gap threshold for this data
-    FLOOR_S = 2.0     # minimum gap threshold of 1 second to avoid an excessively low threshold if the cadence is very fast or all timestamps are identical
-
-    if len(dts_pos) >= 100: # enough data points to compute a reliable cadence
-        quart = float(dts_pos.quantile(0.99))
-        gap_thres = max(quart * K_MULT, FLOOR_S)
+    if "Date" in df.columns:
+        df = df.sort_values(["Date", "ts_raw"], kind='mergesort').reset_index(drop=True)
     else:
-        gap_thres = FLOOR_S
+        df = df.sort_values("ts_raw", kind='mergesort').reset_index(drop=True)
+
+    dts = df["ts_raw"].diff()
+
+    # Normal cadence for positive diffs only (ignoring reboots and gaps between sessions)
+    CONTINUITY_GAP = 30.0  # seconds; gaps larger than this are treated as session breaks, not cadence outliers
 
     # Build period break mask
     period_break = pd.Series(False, index=df.index)
     period_break.iloc[0] = True
 
+    # Date change: new period when Date changes (indicating a new parquet file / day)
+    period_break |= df["Date"].ne(df["Date"].shift()).fillna(False)
+
     # Hard boundary: timestamp decreases
     period_break |= dts.lt(0).fillna(False)
 
     # Adaptive boundary: timestamp increases but gap is larger than expected cadence (indicating a new session or period)
-    period_break |= dts.gt(gap_thres).fillna(False)
+    period_break |= dts.gt(CONTINUITY_GAP).fillna(False)
 
-    # Hard boundary: date changes (indicating a new parquet file / day)
-    if "Date" in df.columns:
-        period_break |= df["Date"].ne(df["Date"].shift()).fillna(False)
-
-    df["time_period"] = np.cumsum(period_break)
+    df['time_period'] = period_break.cumsum()
 
     # -- Convert Timestamp back to datetime so pipeline dt operations work ------
     # Use Date column as the calendar base when available; otherwise use a
     # synthetic epoch so that datetime arithmetic (diff, subtraction) is
     # still valid within each period.
     if "Date" in df.columns:
-        df[ts_col] = df["Date"] + pd.to_timedelta(raw_ts, unit="s")
+        df[ts_col] = df["Date"] + pd.to_timedelta(df["ts_raw"], unit="s")
     else:
         base = pd.Timestamp("2000-01-01")
-        df[ts_col] = base + pd.to_timedelta(raw_ts, unit="s")
+        df[ts_col] = base + pd.to_timedelta(df["ts_raw"], unit="s")
 
     n_periods = df["time_period"].nunique()
     print(
