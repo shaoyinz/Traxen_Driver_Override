@@ -18,6 +18,7 @@ Dependencies: polars, py7zr, pandas, pyarrow
 """
 
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -26,9 +27,35 @@ import py7zr
 
 from config import COLS
 
+# Reject obviously malformed parquet schemas before concatenation.
+# Normal truck files are ~245-277 cols in this dataset; malformed ones can have
+# thousands of numeric-like "column names" (e.g., "0.00", "7.00.1").
+_MAX_REASONABLE_COLS = 600
+_NUMERIC_LIKE_COL_RE = re.compile(r"\s*\d+(\.\d+)*")
+_MAX_NUMERIC_LIKE_COL_RATIO = 0.20
+
+
+def _schema_suspicious_reason(schema: pl.Schema) -> str | None:
+    """Return a reason string if schema looks malformed, otherwise None."""
+    names = list(schema.names())
+    n_cols = len(names)
+    if n_cols == 0:
+        return "empty schema"
+    if n_cols > _MAX_REASONABLE_COLS:
+        return f"too many columns ({n_cols} > {_MAX_REASONABLE_COLS})"
+
+    n_numeric_like = sum(1 for n in names if _NUMERIC_LIKE_COL_RE.fullmatch(n))
+    ratio = n_numeric_like / n_cols
+    if ratio > _MAX_NUMERIC_LIKE_COL_RATIO:
+        return (
+            f"too many numeric-like column names "
+            f"({n_numeric_like}/{n_cols} = {ratio:.1%})"
+        )
+    return None
+
 
 # ---------------------------------------------------------------------------
-# Step 1 – Archive Extraction + Lazy Scan
+# Step 1 – archive extraction + lazy scan
 # ---------------------------------------------------------------------------
 
 def read_nov_data(
@@ -76,17 +103,40 @@ def read_nov_data(
             print(f"[loader] {truck_id}: no parquet files found in cache – skipping")
             continue
 
+        valid_files: list[Path] = []
+        bad_files: list[tuple[Path, str]] = []
+        for f in parquet_files:
+            try:
+                # Force schema read early so corrupt files are skipped up-front.
+                schema = pl.scan_parquet(f).collect_schema()
+                suspicious = _schema_suspicious_reason(schema)
+                if suspicious:
+                    bad_files.append((f, f"suspicious schema: {suspicious}"))
+                    continue
+                valid_files.append(f)
+            except Exception as exc:
+                bad_files.append((f, str(exc)))
+
+        if bad_files:
+            print(f"[loader] {truck_id}: skipped {len(bad_files)} corrupt parquet file(s):")
+            for bad_file, err in bad_files:
+                print(f"    - {bad_file.name}: {err}")
+
+        if not valid_files:
+            print(f"[loader] {truck_id}: no valid parquet files after validation – skipping")
+            continue
+
         lf = pl.concat(
             [
                 pl.scan_parquet(f).with_columns(pl.lit(f.stem).alias("Date"))
-                for f in parquet_files
+                for f in valid_files
             ],
             how="diagonal_relaxed",
         )
         truck_lfs[truck_id] = lf
         print(
             f"[loader] {truck_id}: "
-            f"{len(parquet_files)} file(s), "
+            f"{len(valid_files)} valid file(s), "
             f"{lf.collect_schema().len()} cols"
         )
 
