@@ -197,7 +197,8 @@ def prepare_truck_dataframe(
     Actions performed:
     - Collect the lazy query into memory.
     - Cast the Timestamp column to ``datetime64`` (pandas).
-    - Sort by Timestamp and reset the integer index.
+    - Sort by Date to preserve Timestamp continuity within each day (parquet file)
+    - Assign time periods based on timestamp discontinuities.
 
     Args:
         lf:       Polars LazyFrame for a single truck (from read_nov_data).
