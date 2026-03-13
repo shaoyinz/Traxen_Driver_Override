@@ -229,20 +229,15 @@ def prepare_truck_dataframe(
 
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce", format="%Y-%m-%d").dt.normalize()
-        df = df.sort_values(["Date", ts_col], kind='mergesort').reset_index(drop=True)
     else:
         base = pd.Timestamp("2000-01-01")
         df["Date"] = base + pd.to_timedelta(df[ts_col], unit="s")
-        df = df.sort_values(["Date", ts_col], kind='mergesort').reset_index(drop=True)
+
+    # Sort by Date only (stable sort preserves within-day session order from
+    # pl.concat, so overlapping sessions on the same day are NOT interleaved).
+    df = df.sort_values("Date", kind="mergesort").reset_index(drop=True)
 
     df["ts_raw"] = pd.to_numeric(df[ts_col], errors="coerce")
-
-    # Compute normal cadence of timestamps (100ms expected) from positive diffs, excluding huge gaps.
-    # Use the 99th percentile to be robust to outliers while still capturing the typical cadence.
-    if "Date" in df.columns:
-        df = df.sort_values(["Date", "ts_raw"], kind='mergesort').reset_index(drop=True)
-    else:
-        df = df.sort_values("ts_raw", kind='mergesort').reset_index(drop=True)
 
     dts = df["ts_raw"].diff()
 
