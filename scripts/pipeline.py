@@ -35,7 +35,7 @@ from config import CFG, COLS, CONTEXT_COLS, EXPORT_COLS
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ---------------------------------------------------------------------------
-# GPS Validity Helpers
+# GPS validity helpers
 # ---------------------------------------------------------------------------
 
 _LAT_BOUNDS      = (-90.0,  90.0)
@@ -57,13 +57,11 @@ def _is_reasonable_latlon(lat, lon) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 – Dedup & Gap Detection
+# Stage 2 – Dedup & gap detection
 # ---------------------------------------------------------------------------
 
 def dedup_and_check_gaps(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Resolve duplicate timestamps using lat/lon quality, then flag large gaps.
-    Vectorized version to avoid slow per-row iteration and OOM (no per-row apply, minimal intermediate objects).
+    """Resolve duplicate timestamps using lat/lon quality, then flag large gaps.
 
     Resolution rules per duplicate group:
       1. No row has reasonable lat/lon  → keep the last row.
@@ -137,12 +135,11 @@ def dedup_and_check_gaps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2b – Clean Zero GPS
+# Stage 2b – Clean zero GPS
 # ---------------------------------------------------------------------------
 
 def clean_zero_gps(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Replace lat=0 & lon=0 with NaN (GPS dropout placeholder).
+    """Replace lat=0 & lon=0 with NaN (GPS dropout placeholder).
 
     Other CAN signals on the same rows (speed, torque, pedals, iQCMode) are
     independently sourced and remain valid – only the GPS columns are nulled.
@@ -158,12 +155,11 @@ def clean_zero_gps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 – Build Active Sessions
+# Stage 3 – Build active sessions
 # ---------------------------------------------------------------------------
 
 def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Segment contiguous iQC-active periods into labelled sessions.
+    """Segment contiguous iQC-active periods into labelled sessions.
 
     A session is a contiguous block of ``iQC1.iQCMode`` in the set
     {2, 3, 4, 5, 6} with no inter-row gap exceeding
@@ -233,8 +229,7 @@ def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Detect every override event using two complementary rules.
+    """Detect every override event using two complementary rules.
 
     Rule A – Throttle Override:
         Any row where ``iQC1.iQCMode`` transitions from ACTIVE {2,3,4}
@@ -323,9 +318,7 @@ def _is_valid_throttle_entry_idx(df: pd.DataFrame, idx: int) -> bool:
 
 
 def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
-    """
-    Seconds the current session had been running at *prev_idx*.
-    """
+    """Seconds the current session had been running at *prev_idx*."""
     ACTIVE = CFG["IQCMODE_ACTIVE"] | {CFG["IQCMODE_THROTTLE_OVERRIDE"]}
     j = prev_idx
     while j > 0 and df.at[j, COLS["iqc_mode"]] in ACTIVE:
@@ -341,8 +334,7 @@ def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
 # ---------------------------------------------------------------------------
 
 def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Flag ACTIVE_EXIT events that are part of the system's own recovery.
+    """Flag ACTIVE_EXIT events that are part of the system's own recovery.
 
     After a Throttle Override (mode → 6) the system goes through a recovery
     sequence (6 → 2 → 3 → 4 → 3 → 0) before re-engaging.  The final
@@ -379,8 +371,7 @@ def dedup_throttle_exits(events_df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Mark low-quality events as noisy (flagged, not deleted).
+    """Mark low-quality events as noisy (flagged, not deleted).
 
     Criteria:
       1. Post-throttle-override system exits (stage 6).
@@ -421,8 +412,11 @@ def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFram
     pre_rows  = int(CFG["PRE_OVERRIDE_S"]  / 0.1)
     post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
 
+    clean_events = events_df[~events_df["is_noisy"]]
+    print(f"    Classifying {len(clean_events)} clean events (skipping {events_df['is_noisy'].sum()} noisy) ...")
+
     rows = []
-    for _, ev in events_df.iterrows():
+    for _, ev in clean_events.iterrows():
         idx  = int(ev["override_idx"])
         pre  = df.iloc[max(0, idx - pre_rows): idx]
         post = df.iloc[idx + 1: min(len(df), idx + 1 + post_rows)]
@@ -479,12 +473,11 @@ def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFram
         })
 
     result = pd.DataFrame(rows)
-    clean  = result[~result["is_noisy"]]
-    print("    Override types (clean events only):")
-    for t, c in clean["override_type"].value_counts().items():
-        pct = 100 * c / len(clean) if len(clean) else 0
+    print("    Override types (clean events):")
+    for t, c in result["override_type"].value_counts().items():
+        pct = 100 * c / len(result) if len(result) else 0
         print(f"      {t:<22}: {c}  ({pct:.0f} %)")
-    non_target = clean["override_type"].isna().sum()
+    non_target = result["override_type"].isna().sum()
     if non_target:
         print(f"      {'NON_TARGET':<22}: {non_target}")
     return result
@@ -564,12 +557,13 @@ def save_context_windows_parquet(
     post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
     available = [c for c in CONTEXT_COLS if c in df.columns]
 
-    clean = events_df[~events_df["is_noisy"]]
+    TARGET_TYPES = {"THROTTLE_OVERRIDE", "THROTTLE_BRAKE_PEDAL"}
+    target = events_df[events_df["override_type"].isin(TARGET_TYPES)]
     parquet_path = os.path.join(output_dir, "context_windows.parquet")
-    print(f"[8] Saving {len(clean)} context windows -> {parquet_path}")
+    print(f"[8] Saving {len(target)} context windows -> {parquet_path}")
 
     windows = []
-    for event_id, (_, ev) in enumerate(clean.iterrows()):
+    for event_id, (_, ev) in enumerate(target.iterrows()):
         idx = _context_anchor_idx(df, ev)
         window = df.iloc[
             max(0, idx - pre_rows): min(len(df), idx + post_rows + 1)
@@ -638,11 +632,11 @@ def _context_anchor_idx(df: pd.DataFrame, ev: pd.Series) -> int:
 # ---------------------------------------------------------------------------
 
 def export_events(events_df: pd.DataFrame, output_path: str) -> None:
-    """
-    Write the full events table (all events, noisy ones included) to CSV.
-    """
-    cols = [c for c in EXPORT_COLS if c in events_df.columns]
-    out  = events_df[cols].sort_values("override_ts").reset_index(drop=True)
+    """Write clean target-type events to CSV."""
+    TARGET_TYPES = {"THROTTLE_OVERRIDE", "THROTTLE_BRAKE_PEDAL"}
+    target = events_df[events_df["override_type"].isin(TARGET_TYPES)]
+    cols = [c for c in EXPORT_COLS if c in target.columns]
+    out  = target[cols].sort_values("override_ts").reset_index(drop=True)
     out.to_csv(output_path, index=False)
     print(f"[9] Events table saved -> {output_path}  ({len(out)} rows)")
 
@@ -660,8 +654,7 @@ def run_pipeline(
     write_context: bool | None = None,
     write_events: bool | None = None,
 ) -> pd.DataFrame:
-    """
-    Run all pipeline stages on an already-loaded DataFrame.
+    """Run all pipeline stages on an already-loaded DataFrame.
 
     Args:
         df:           Pandas DataFrame from ``data_loader.prepare_truck_dataframe``.
@@ -704,15 +697,14 @@ def run_pipeline(
     if write_events:
         export_events(events_df, output_path)
 
-    clean = events_df[~events_df["is_noisy"]]
     print("\n" + "-" * 65)
-    print(f"  TOTAL raw events   : {len(events_df)}")
-    print(f"  Clean events       : {len(clean)}")
-    print(f"  Noisy / filtered   : {events_df['is_noisy'].sum()}")
-    print(f"    of which throttle dup: {events_df['is_throttle_exit_dup'].sum()}")
-    print(f"\n  All events (including noisy) by type:")
+    print(f"  Clean classified events: {len(events_df)}")
+    print(f"\n  By type:")
     for t, c in events_df["override_type"].value_counts().items():
         print(f"    {t:<22}: {c}")
+    non_target = events_df["override_type"].isna().sum()
+    if non_target:
+        print(f"    {'NON_TARGET':<22}: {non_target}")
     print("-" * 65 + "\n")
 
     return events_df
