@@ -12,7 +12,7 @@ Stages
   5.  dedup_throttle_exits      – flag system exits that follow a throttle override
   6.  filter_events             – mark noisy / low-quality events
   7.  classify_overrides        – label each event with an override type
-  8.  save_context_windows      – write per-event 20-second CSVs
+  8.  save_context_windows_parquet – write all event windows to one parquet
   9.  export_events             – write the summary events CSV
 
 Orchestrator
@@ -237,7 +237,7 @@ def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
     Detect every override event using two complementary rules.
 
     Rule A – Throttle Override:
-        Any row where ``iQC1.iQCMode`` transitions from ACTIVE {2,3,4,5}
+        Any row where ``iQC1.iQCMode`` transitions from ACTIVE {2,3,4}
         into 6 (Throttle Override).
 
     Rule B – Active-state exit:
@@ -258,10 +258,19 @@ def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
     mask_throttle = (mode_prev.isin(ACTIVE)) & (mode == T_OVR)
     mask_exit     = (mode_prev.isin(ACTIVE)) & (mode.isin(INACTIVE))
 
+    throttle_candidates = df[mask_throttle].index.tolist()
+    throttle_valid = [
+        idx for idx in throttle_candidates
+        if _is_valid_throttle_entry_idx(df, idx)
+    ]
+    throttle_valid_set = set(throttle_valid)
+
     events = []
     for mask, raw_type in [(mask_throttle, "THROTTLE_ENTRY"),
                            (mask_exit,     "ACTIVE_EXIT")]:
         for idx in df[mask].index:
+            if raw_type == "THROTTLE_ENTRY" and idx not in throttle_valid_set:
+                continue
             prev_idx      = idx - 1 if idx > 0 else 0
             session_dur_s = _session_dur_at(df, prev_idx)
             events.append({
@@ -280,9 +289,37 @@ def detect_overrides(df: pd.DataFrame) -> pd.DataFrame:
         .sort_values("override_ts")
         .reset_index(drop=True)
     )
-    print(f"    Raw events – throttle entries: {mask_throttle.sum()}, "
+    print(f"    Raw events – throttle entries: {len(throttle_valid)} / {len(throttle_candidates)} valid, "
           f"active exits: {mask_exit.sum()}")
     return events_df
+
+
+def _is_valid_throttle_entry_idx(df: pd.DataFrame, idx: int) -> bool:
+    """Return True only for clean 2/3/4 -> 6 throttle entry events."""
+    pre_rows = int(CFG["PRE_OVERRIDE_S"] / 0.1)
+    post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
+    mode_col = COLS["iqc_mode"]
+    active_modes = CFG["IQCMODE_ACTIVE"]
+    throttle_mode = CFG["IQCMODE_THROTTLE_OVERRIDE"]
+
+    # Require full +/- context so transition sits at the window center.
+    has_full_window = (idx - pre_rows >= 0) and (idx + post_rows < len(df))
+    if not has_full_window or idx <= 0:
+        return False
+
+    # Strict center transition: previous must be 2/3/4 and current must be 6.
+    if not (df.at[idx - 1, mode_col] in active_modes and df.at[idx, mode_col] == throttle_mode):
+        return False
+
+    pre_window = df.iloc[idx - pre_rows:idx]
+    # Keep only first-entry events, not rebound 6->(2/3/4)->6.
+    if (pre_window[mode_col] == throttle_mode).any():
+        return False
+    # Ensure pre-window really contains active iQC states.
+    if not pre_window[mode_col].isin(active_modes).any():
+        return False
+
+    return True
 
 
 def _session_dur_at(df: pd.DataFrame, prev_idx: int) -> float:
@@ -372,15 +409,12 @@ def filter_events(events_df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Label each event with an override type and enrich with context features.
+    """Assign only the two target override types and enrich context features.
 
     Classification hierarchy (priority order):
-      1. THROTTLE_OVERRIDE  – raw_detection_type == 'THROTTLE_ENTRY'
-      2. BRAKE_PEDAL        – BrakeSwitch == 1 in the 10-second pre-window
-      3. ACCEL_PEDAL        – AccelPedal > threshold in pre-window, no brake
-      4. ACC_OFF_BUTTON     – CC switch change in pre-window, no pedal activity
-      5. UNKNOWN            – none of the above
+      1. THROTTLE_OVERRIDE      – raw_detection_type == 'THROTTLE_ENTRY'
+      2. THROTTLE_BRAKE_PEDAL   – BrakeSwitch == 1 in the pre-window
+      3. None                   – all other events (non-target)
     """
     print("[7] Classifying override types ...")
 
@@ -391,19 +425,10 @@ def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFram
     for _, ev in events_df.iterrows():
         idx  = int(ev["override_idx"])
         pre  = df.iloc[max(0, idx - pre_rows): idx]
-        post = df.iloc[idx: min(len(df), idx + post_rows)]
+        post = df.iloc[idx + 1: min(len(df), idx + 1 + post_rows)]
 
         max_accel    = _safe(pre, COLS["accel_pedal"],  "max")
         brake_active = _safe(pre, COLS["brake_sw_eng"], "max") == CFG["BRAKE_SWITCH_ON"]
-
-        cc_btn_change = False
-        for btn_col in [COLS["cc_enable_cab"], COLS["cc_enable_mc"],
-                        COLS["cc_set_cab"],    COLS["cc_resume_cab"]]:
-            if btn_col in df.columns and not pre.empty:
-                s = pre[btn_col].dropna()
-                if len(s) >= 2 and s.nunique() > 1:
-                    cc_btn_change = True
-                    break
 
         # Context features
         avg_spd_pre  = _safe(pre,  COLS["spd_wheel"], "mean")
@@ -425,24 +450,20 @@ def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFram
         lat = _at(df, idx, COLS["lat"])
         lon = _at(df, idx, COLS["lon"])
 
-        # Classification
+        # Keep only two target labels; everything else is non-target.
         if ev["raw_detection_type"] == "THROTTLE_ENTRY":
             override_type = "THROTTLE_OVERRIDE"
         elif brake_active:
-            override_type = "BRAKE_PEDAL"
-        elif max_accel > CFG["ACCEL_PEDAL_THRESHOLD_PCT"]:
-            override_type = "ACCEL_PEDAL"
-        elif cc_btn_change:
-            override_type = "ACC_OFF_BUTTON"
+            override_type = "THROTTLE_BRAKE_PEDAL"
         else:
-            override_type = "UNKNOWN"
+            override_type = None
 
         rows.append({
             **ev.to_dict(),
             "override_type":      override_type,
             "max_accel_pre_pct":  max_accel,
             "brake_active_pre":   brake_active,
-            "cc_btn_change_pre":  cc_btn_change,
+            "cc_btn_change_pre":  False,
             "avg_speed_pre_kph":  avg_spd_pre,
             "avg_speed_post_kph": avg_spd_post,
             "cipv_dist_m":        cipv_dist,
@@ -463,6 +484,9 @@ def classify_overrides(df: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFram
     for t, c in clean["override_type"].value_counts().items():
         pct = 100 * c / len(clean) if len(clean) else 0
         print(f"      {t:<22}: {c}  ({pct:.0f} %)")
+    non_target = clean["override_type"].isna().sum()
+    if non_target:
+        print(f"      {'NON_TARGET':<22}: {non_target}")
     return result
 
 
@@ -490,11 +514,14 @@ def save_context_windows(
     events_df: pd.DataFrame,
     output_dir: str,
 ) -> None:
-    """
-    Write one CSV per clean override event covering ±10 seconds.
+    """Write one CSV per clean override event covering ±10 seconds.
+
+    For THROTTLE_OVERRIDE events, the pre-window start is anchored to the
+    actual switch-to-6 row: 10 seconds before == 100 rows before that switch.
     """
     os.makedirs(output_dir, exist_ok=True)
-    pre_rows  = int(CFG["PRE_OVERRIDE_S"]  / 0.1)
+    # 10 Hz data -> 10 seconds corresponds to 100 rows.
+    pre_rows  = 100
     post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
     available = [c for c in CONTEXT_COLS if c in df.columns]
 
@@ -502,10 +529,12 @@ def save_context_windows(
     print(f"[8] Saving {len(clean)} context windows -> {output_dir}/")
 
     for i, (_, ev) in enumerate(clean.iterrows()):
-        idx    = int(ev["override_idx"])
+        idx    = _context_anchor_idx(df, ev)
         ts_str = str(ev["override_ts"]).replace(":", "-").replace(" ", "_")
         otype  = ev["override_type"]
-        window = df.iloc[max(0, idx - pre_rows): min(len(df), idx + post_rows)][available].copy()
+        window = df.iloc[
+            max(0, idx - pre_rows): min(len(df), idx + post_rows + 1)
+        ][available].copy()
         window["is_override_point"] = False
         if idx in window.index:
             window.at[idx, "is_override_point"] = True
@@ -513,6 +542,95 @@ def save_context_windows(
         window.to_csv(fname, index=False)
 
     print("    Done.")
+
+
+def save_context_windows_parquet(
+    df: pd.DataFrame,
+    events_df: pd.DataFrame,
+    output_dir: str,
+    truck_id: str = "",
+) -> None:
+    """Write all clean event windows into one parquet file.
+
+    Each row in the output belongs to an event window and includes:
+      - ``truck_id``
+      - ``event_id`` (0-based within this run, after clean-event filtering)
+      - ``override_type``
+      - ``override_ts``
+      - ``is_override_point``
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    pre_rows = 100
+    post_rows = int(CFG["POST_OVERRIDE_S"] / 0.1)
+    available = [c for c in CONTEXT_COLS if c in df.columns]
+
+    clean = events_df[~events_df["is_noisy"]]
+    parquet_path = os.path.join(output_dir, "context_windows.parquet")
+    print(f"[8] Saving {len(clean)} context windows -> {parquet_path}")
+
+    windows = []
+    for event_id, (_, ev) in enumerate(clean.iterrows()):
+        idx = _context_anchor_idx(df, ev)
+        window = df.iloc[
+            max(0, idx - pre_rows): min(len(df), idx + post_rows + 1)
+        ][available].copy()
+
+        window["truck_id"] = truck_id
+        window["event_id"] = event_id
+        window["override_type"] = ev.get("override_type")
+        window["override_ts"] = ev.get("override_ts")
+        window["is_override_point"] = window.index == idx
+        windows.append(window.reset_index(drop=True))
+
+    if windows:
+        out = pd.concat(windows, ignore_index=True)
+    else:
+        out = pd.DataFrame(columns=available + [
+            "truck_id",
+            "event_id",
+            "override_type",
+            "override_ts",
+            "is_override_point",
+        ])
+    out.to_parquet(parquet_path, index=False)
+    print("    Done.")
+
+
+def _context_anchor_idx(df: pd.DataFrame, ev: pd.Series) -> int:
+    """Return row index to anchor context extraction.
+
+    THROTTLE_OVERRIDE windows are anchored at the actual 2/3/4 -> 6 transition.
+    Other event types fall back to ``override_idx``.
+    """
+    fallback_idx = int(ev["override_idx"])
+    mode_col = COLS["iqc_mode"]
+    ts_col = COLS["ts"]
+
+    if (
+        ev.get("override_type") != "THROTTLE_OVERRIDE"
+        or mode_col not in df.columns
+        or ts_col not in df.columns
+    ):
+        return fallback_idx
+
+    active_modes = CFG["IQCMODE_ACTIVE"]
+    throttle_mode = CFG["IQCMODE_THROTTLE_OVERRIDE"]
+    mode = df[mode_col]
+    transition_mask = mode.shift(1).isin(active_modes) & (mode == throttle_mode)
+    transition_idxs = df.index[transition_mask]
+    if len(transition_idxs) == 0:
+        return fallback_idx
+
+    # Prefer exact timestamp match, then nearest transition by timestamp.
+    target_ts = pd.Timestamp(ev["override_ts"])
+    exact = transition_idxs[df.loc[transition_idxs, ts_col] == target_ts]
+    if len(exact):
+        return int(exact[0])
+
+    diffs = (df.loc[transition_idxs, ts_col] - target_ts).abs()
+    if diffs.isna().all():
+        return fallback_idx
+    return int(diffs.idxmin())
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +655,10 @@ def run_pipeline(
     df: pd.DataFrame,
     output_path: str,
     context_dir: str = "",
+    write_outputs: bool = True,
+    truck_id: str = "",
+    write_context: bool | None = None,
+    write_events: bool | None = None,
 ) -> pd.DataFrame:
     """
     Run all pipeline stages on an already-loaded DataFrame.
@@ -544,8 +666,12 @@ def run_pipeline(
     Args:
         df:           Pandas DataFrame from ``data_loader.prepare_truck_dataframe``.
         output_path:  Path for the output events CSV.
-        context_dir:  Directory for per-event context CSVs.
-                      Pass an empty string to skip saving them.
+        context_dir:  Directory for context-window parquet output.
+                      Pass an empty string to skip saving context windows.
+        write_outputs: Backward-compatible switch for both context + events outputs.
+        truck_id:     Truck identifier written into context-window parquet rows.
+        write_context: If set, overrides ``write_outputs`` for context-window output.
+        write_events:  If set, overrides ``write_outputs`` for events CSV export.
 
     Returns:
         events_df with all events (clean and noisy) and classification columns.
@@ -563,10 +689,20 @@ def run_pipeline(
     events_df = filter_events(events_df)
     events_df = classify_overrides(df, events_df)
 
-    if context_dir:
-        save_context_windows(df, events_df, context_dir)
+    if write_context is None:
+        write_context = write_outputs
+    if write_events is None:
+        write_events = write_outputs
 
-    export_events(events_df, output_path)
+    if write_context and context_dir:
+        save_context_windows_parquet(
+            df=df,
+            events_df=events_df,
+            output_dir=context_dir,
+            truck_id=truck_id,
+        )
+    if write_events:
+        export_events(events_df, output_path)
 
     clean = events_df[~events_df["is_noisy"]]
     print("\n" + "-" * 65)
