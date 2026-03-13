@@ -172,8 +172,9 @@ def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
     print("[3] Building active sessions ...")
 
     SESSION_STATES = CFG["IQCMODE_ACTIVE"] | {CFG["IQCMODE_THROTTLE_OVERRIDE"]}
-    mode = df[COLS["iqc_mode"]].values
-    dt   = df["_dt_s"].values
+    mode   = df[COLS["iqc_mode"]].values
+    dt     = df["_dt_s"].values
+    period = df["time_period"].values
 
     session_id = np.full(len(df), np.nan)
     sid        = 0
@@ -181,6 +182,11 @@ def build_sessions(df: pd.DataFrame) -> pd.DataFrame:
     seg_start  = 0
 
     for i in range(len(df)):
+        if i > 0 and period[i] != period[i - 1] and in_session:
+            session_id[seg_start:i] = sid
+            sid += 1
+            in_session = False
+
         in_s = mode[i] in SESSION_STATES
         if in_s:
             if not in_session:
