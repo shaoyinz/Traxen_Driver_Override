@@ -115,31 +115,43 @@ COLS: dict[str, str] = {
 # Columns written into per-event context window CSVs (stage 9)
 # ---------------------------------------------------------------------------
 CONTEXT_COLS: list[str] = [
-    "Timestamp", "iQC1.iQCMode",
+    # Basic columns
+    "Timestamp", 
+    "iQC1.iQCMode",
+    "EH_not_localized.EH_not_localized",
+    "VP_RP_80.Latitude",
+    "VP_RP_80.Longitude",
+    # Brake and gas position
     "EEC2_Engine.AccelPedalPos1",
     "CCVS1_Engine.BrakeSwitch",
+    "EBC1_Brakes.BrakePedalPos",
+    # Actual Speed
     "CCVS1_Engine.WheelBasedVehicleSpeed",
-    "VDS_FC.NavigationBasedVehicleSpeed",
+    # CIPV
+    "ACC1_Radar.DistanceToForwardVehicle",
+    "ACC1_Radar.SpeedOfForwardVehicle",
+    "ACC1_Radar.TargetDetected",
+    "ARI_RP.YawRateExRange",
+    # Slope
+    "IQVS1.iQRoadGrade",
+    "VDS_RP_80.Altitude",
+    "PCC1.RoadwayNextGradeDis",
+    "PCC1.RoadwayNextGrade",
+    "PCC1.RoadwayPresentGrade",
+    # Curvature
+    "IQCU_IMU_Status_4.PathCurvature",
+    "ACC1.RoadCurvature",
+    # Perceived Speed
+    "CCVS1_Engine.CruiseCtrlSetSpeed",
+    "IQPC1.iQReferenceSpeed",
+    "IQPC1.iQMaximumSpeed",
+    "IQPC1.iQMinimumSpeed",
+    # Truck Behavior, keep in case needed
+    "IQVLPE1.iQGrossVehicleWeightEst",
     "EEC1_Engine.EngSpeed",
     "EEC1_Engine.ActualEngPercentTorque",
     "EEC1_Engine.DriversDemandEngPercentTorque",
     "ERC1_Retarder.ActualRetarderPercentTorque",
-    "ACC1_Radar.DistanceToForwardVehicle",
-    "ACC1_Radar.SpeedOfForwardVehicle",
-    "ACC1_Radar.TargetDetected",
-    "iQCU_Status_1.DistanceToForwardVehicle",
-    "iQCU_Status_1.Speed2D_FWVehicle",
-    "IQVS1.iQRoadGrade",
-    "ACC1.RoadCurvature",
-    "VDS_FC.Altitude",
-    "ARI_RP.YawRateExRange",
-    "IQCU_IMU_Status_4.PathCurvature",
-    "ETC2_Transmission.TransCurrentGear",
-    "IQVLPE1.iQGrossVehicleWeightEst",
-    "VP_RP_80.Latitude",
-    "VP_RP_80.Longitude",
-    "EH_not_localized.EH_not_localized",
-    "CCVS1_Cab_Controller.CruiseCtrlEnableSwitch",
 ]
 
 # ---------------------------------------------------------------------------
